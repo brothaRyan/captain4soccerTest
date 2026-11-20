@@ -298,7 +298,7 @@ function viewTm(){var mode=UI.tmView||'match',h='<div class="qt tm-view-tabs"><b
  if(ms.length)h+='<div class="list attendee-grid">'+ms.map(function(m){
   return '<div class="row"><div class="nm"><span class="attendee-name">'+esc(personName(m))+'</span>'+tag(m,true)+'</div></div>'}).join('')+'</div>';
  else h+='<p class="note w">참석자가 없어요. 출석 탭에서 참석자를 선택해 주세요.</p>';
- h+='<button class="btn" data-act="auto">빈 자리에 참석자 자동 배치</button></section>';
+ h+='<button class="btn" data-act="auto">참석자 자동 배치 / 다시 섞기</button></section>';
  if(!at.length)return h+'<p class="note w">참석자를 선택한 뒤 자동 배치할 수 있어요.</p>';
  h+='<div class="tw"><table><thead><tr><th>이름</th>'+S.q.map(function(_,i){return '<th>'+(i+1)+'쿼터</th>'}).join('')+'<th>합계</th></tr></thead><tbody>';
  var mins=[],zero=[];
@@ -409,21 +409,29 @@ function copyText(t){return new Promise(function(res){
  function fb(){try{var a=document.createElement('textarea');a.value=t;a.style.cssText='position:fixed;opacity:0';document.body.appendChild(a);a.select();var ok=document.execCommand('copy');a.remove();res(ok)}catch(e){res(false)}}
  try{navigator.clipboard.writeText(t).then(function(){res(true)},fb)}catch(e){fb()}})}
 
-function autoAssign(){var ppl=attendees(),cnt={},len=ppl.length,added=0;ppl.forEach(function(p){cnt[p.id]=0});
- S.q.forEach(function(q){var seen={};q.s.forEach(function(id){if(id&&cnt[id]!==undefined&&!seen[id]){cnt[id]++;seen[id]=1}})});
- S.q.forEach(function(q,qi){var defs=slotDefs(q.f),res=q.s.slice(),placed={},empty=0;
-  res.forEach(function(id){if(id)placed[id]=1;else empty++});
-  if(!empty)return;
-  var order=ppl.map(function(p,i){return {p:p,k:(i+qi*3)%Math.max(len,1)}}).filter(function(o){return !placed[o.p.id]}).sort(function(a,b){return cnt[a.p.id]-cnt[b.p.id]||a.k-b.k}).map(function(o){return o.p});
+function autoAssign(){var ppl=attendees(),cnt={},attendeeIds=Object.create(null),changed=0;ppl.forEach(function(p){cnt[p.id]=0;attendeeIds[p.id]=true});
+ function locked(q,i,id){return !!id&&(!attendeeIds[id]||!!(q.sub&&q.sub[i]))}
+ function shuffle(list){for(var i=list.length-1;i>0;i--){var j=Math.floor(Math.random()*(i+1)),v=list[i];list[i]=list[j];list[j]=v}return list}
+ S.q.forEach(function(q){var seen={};q.s.forEach(function(id,i){if(id&&cnt[id]!==undefined&&locked(q,i,id)&&!seen[id]){cnt[id]++;seen[id]=1}})});
+ var before=S.q.map(function(q){return q.s.slice()});
+ S.q.forEach(function(q){var defs=slotDefs(q.f),res=q.s.slice(),occupied=Object.create(null),open=[];
+  res.forEach(function(id,i){if(locked(q,i,id)){if(id)occupied[id]=true}else{res[i]=null;open.push(i)}});
+  var order=shuffle(ppl.filter(function(p){return !occupied[p.id]})).sort(function(a,b){return cnt[a.id]-cnt[b.id]});
   function preferredIndex(list,group){var best=99,index=-1;list.forEach(function(p,i){var rank=positionRank(p,group);if(rank<best){best=rank;index=i}});return index}
   var chosen=[],gk=preferredIndex(order,'GK');
   if(gk>=0)chosen.push(order.splice(gk,1)[0]);
-  chosen=chosen.concat(order).slice(0,empty);
-  var left=chosen.slice();
-  ['GK','FW','DF','MF'].forEach(function(g){defs.forEach(function(d,i){if(d.g!==g||res[i])return;var k=preferredIndex(left,g);if(k>=0){res[i]=left[k].id;left.splice(k,1)}})});
-  defs.forEach(function(d,i){if(!res[i]&&left.length)res[i]=left.shift().id});
-  chosen.forEach(function(p){cnt[p.id]++;added++});q.s=res});
- return added}
+  chosen=chosen.concat(order).slice(0,open.length);
+  var left=chosen.slice(),openSet=Object.create(null);open.forEach(function(i){openSet[i]=true});
+  ['GK','FW','DF','MF'].forEach(function(g){defs.forEach(function(d,i){if(d.g!==g||!openSet[i])return;var k=preferredIndex(left,g);if(k>=0){res[i]=left[k].id;left.splice(k,1);delete openSet[i]}})});
+  defs.forEach(function(d,i){if(openSet[i]&&left.length){res[i]=left.shift().id;delete openSet[i]}});
+  chosen.forEach(function(p){cnt[p.id]++});q.s=res});
+ function countChanges(){changed=0;S.q.forEach(function(q,qi){q.s.forEach(function(id,i){if(id!==before[qi][i])changed++})});return changed}
+ if(!countChanges()){
+  for(var qi=0;qi<S.q.length;qi++){var q=S.q[qi],movable=[];q.s.forEach(function(id,i){if(id&&attendeeIds[id]&&!(q.sub&&q.sub[i]))movable.push(i)});
+   if(movable.length>1){var a=Math.floor(Math.random()*movable.length),b=Math.floor(Math.random()*(movable.length-1));if(b>=a)b++;var ai=movable[a],bi=movable[b],tmp=q.s[ai];q.s[ai]=q.s[bi];q.s[bi]=tmp;break}}
+  countChanges()
+ }
+ return changed}
 
 document.addEventListener('click',function(e){
  if(e.target.classList.contains('calendar-shade')){UI.calendarOpen=false;UI.matchCalendarOpen=false;UI.statsCalendarField='';render();return}
@@ -500,7 +508,7 @@ document.addEventListener('click',function(e){
  else if(a==='delguest'){var guest=S.guests.find(function(g){return g.id===id});if(!guest)return;requestConfirm('게스트 삭제 확인','{name} 게스트를 삭제할까요? 현재 경기의 배치에서도 제외됩니다.','삭제',function(){S.guests=S.guests.filter(function(g){return g.id!==id});dropFromLineups(id)},{name:guest.name});return}
  else if(a==='delrec'){var record=S.hist.find(function(r){return r.id===id});if(!record)return;requestConfirm('경기 삭제 확인','{date} 경기 기록을 삭제할까요? 이 작업은 되돌릴 수 없습니다.','삭제',function(){S.hist=S.hist.filter(function(r){return r.id!==id});if(S.matchId===id)S.matchId=null},{date:fmtDate(record.date)});return}
  else if(a==='loadrec'){if(S.matchId)saveMatch();loadRec(id);S.tab='att'}
- else if(a==='auto'){if(!attendees().length){toast('참석자를 먼저 체크해 주세요');return}var assigned=autoAssign();toast(assigned?'빈 자리에 '+assigned+'명을 자동 배치했어요':'자동 배치할 빈 자리가 없어요')}
+ else if(a==='auto'){if(!attendees().length){toast('참석자를 먼저 체크해 주세요');return}var assigned=autoAssign();toast(assigned?'참석자 배치를 새로 섞었어요':'새 배치를 만들 수 없어요')}
  else if(a==='copy'){var txt=lineupText();copyText(txt).then(function(ok){if(ok)toast('라인업을 복사했어요');else{UI.text=txt;render()}});return}
  save();render()});
 document.addEventListener('change',function(e){var t=e.target,c=t.dataset.chg;if(!c)return;
